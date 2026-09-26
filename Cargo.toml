@@ -13,7 +13,6 @@ rust-version = "1.77"
 [features]
 default = ["std"]
 std = []
-nightly = []
 rand = ["dep:rand", "std"]
 
 [dependencies]

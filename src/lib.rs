@@ -15,10 +15,13 @@
 //! ```
 
 #![no_std]
-#![cfg_attr(feature = "nightly", feature(const_default))]
-#![cfg_attr(feature = "nightly", feature(const_trait_impl))]
-#![cfg_attr(feature = "nightly", feature(derive_const))]
-#![cfg_attr(feature = "nightly", feature(hasher_prefixfree_extras))]
+#![feature(const_default)]
+#![feature(const_convert)]
+#![feature(const_result_trait_fn)]
+#![feature(const_index)]
+#![feature(const_trait_impl)]
+#![feature(derive_const)]
+#![feature(hasher_prefixfree_extras)]
 #![allow(rustc::default_hash_types)]
 
 #[cfg(feature = "std")]
@@ -60,8 +63,7 @@ pub use seeded_state::{FxHashMapSeed, FxHashSetSeed};
 /// The current implementation is a fast polynomial hash with a single
 /// bit rotation as a finishing step designed by Orson Peters.
 #[derive(Clone)]
-#[cfg_attr(not(feature = "nightly"), derive(Default))]
-#[cfg_attr(feature = "nightly", derive_const(Default))]
+#[derive_const(Default)]
 pub struct FxHasher {
     hash: usize,
 }
@@ -90,80 +92,19 @@ impl FxHasher {
     pub const fn default() -> FxHasher {
         FxHasher { hash: 0 }
     }
-}
-
-impl FxHasher {
     #[inline]
-    fn add_to_hash(&mut self, i: usize) {
-        self.hash = self.hash.wrapping_add(i).wrapping_mul(K);
+    pub const fn c_write_u64(&mut self, i: u64) {
+        self.add_to_hash(i as usize);
+        #[cfg(target_pointer_width = "32")]
+        self.add_to_hash((i >> 32) as usize);
     }
-}
-
-impl Hasher for FxHasher {
     #[inline]
-    fn write(&mut self, bytes: &[u8]) {
+    pub const fn c_write(&mut self, bytes: &[u8]) {
         // Compress the byte string to a single u64 and add to our hash.
-        self.write_u64(hash_bytes(bytes));
+        self.c_write_u64(hash_bytes(bytes));
     }
-
     #[inline]
-    fn write_u8(&mut self, i: u8) {
-        self.add_to_hash(i as usize);
-    }
-
-    #[inline]
-    fn write_u16(&mut self, i: u16) {
-        self.add_to_hash(i as usize);
-    }
-
-    #[inline]
-    fn write_u32(&mut self, i: u32) {
-        self.add_to_hash(i as usize);
-    }
-
-    #[inline]
-    fn write_u64(&mut self, i: u64) {
-        self.add_to_hash(i as usize);
-        #[cfg(target_pointer_width = "32")]
-        self.add_to_hash((i >> 32) as usize);
-    }
-
-    #[inline]
-    fn write_u128(&mut self, i: u128) {
-        self.add_to_hash(i as usize);
-        #[cfg(target_pointer_width = "32")]
-        self.add_to_hash((i >> 32) as usize);
-        self.add_to_hash((i >> 64) as usize);
-        #[cfg(target_pointer_width = "32")]
-        self.add_to_hash((i >> 96) as usize);
-    }
-
-    #[inline]
-    fn write_usize(&mut self, i: usize) {
-        self.add_to_hash(i);
-    }
-
-    #[cfg(feature = "nightly")]
-    #[inline]
-    fn write_length_prefix(&mut self, _len: usize) {
-        // Most cases will specialize hash_slice to call write(), which encodes
-        // the length already in a more efficient manner than we could here. For
-        // HashDoS-resistance you would still need to include this for the
-        // non-slice collection hashes, but for the purposes of rustc we do not
-        // care and do not wish to pay the performance penalty of mixing in len
-        // for those collections.
-    }
-
-    #[cfg(feature = "nightly")]
-    #[inline]
-    fn write_str(&mut self, s: &str) {
-        // Similarly here, write already encodes the length, so nothing special
-        // is needed.
-        self.write(s.as_bytes())
-    }
-
-    #[inline]
-    fn finish(&self) -> u64 {
+    pub const fn c_finish(&self) -> u64 {
         // Since we used a multiplicative hash our top bits have the most
         // entropy (with the top bit having the most, decreasing as you go).
         // As most hash table implementations (including hashbrown) compute
@@ -189,13 +130,84 @@ impl Hasher for FxHasher {
     }
 }
 
+impl FxHasher {
+    #[inline]
+    const fn add_to_hash(&mut self, i: usize) {
+        self.hash = self.hash.wrapping_add(i).wrapping_mul(K);
+    }
+}
+
+impl Hasher for FxHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        self.c_write(bytes);
+    }
+
+    #[inline]
+    fn write_u8(&mut self, i: u8) {
+        self.add_to_hash(i as usize);
+    }
+
+    #[inline]
+    fn write_u16(&mut self, i: u16) {
+        self.add_to_hash(i as usize);
+    }
+
+    #[inline]
+    fn write_u32(&mut self, i: u32) {
+        self.add_to_hash(i as usize);
+    }
+
+    #[inline]
+    fn write_u64(&mut self, i: u64) {
+        self.c_write_u64(i);
+    }
+
+    #[inline]
+    fn write_u128(&mut self, i: u128) {
+        self.add_to_hash(i as usize);
+        #[cfg(target_pointer_width = "32")]
+        self.add_to_hash((i >> 32) as usize);
+        self.add_to_hash((i >> 64) as usize);
+        #[cfg(target_pointer_width = "32")]
+        self.add_to_hash((i >> 96) as usize);
+    }
+
+    #[inline]
+    fn write_usize(&mut self, i: usize) {
+        self.add_to_hash(i);
+    }
+
+    #[inline]
+    fn write_length_prefix(&mut self, _len: usize) {
+        // Most cases will specialize hash_slice to call write(), which encodes
+        // the length already in a more efficient manner than we could here. For
+        // HashDoS-resistance you would still need to include this for the
+        // non-slice collection hashes, but for the purposes of rustc we do not
+        // care and do not wish to pay the performance penalty of mixing in len
+        // for those collections.
+    }
+
+    #[inline]
+    fn write_str(&mut self, s: &str) {
+        // Similarly here, write already encodes the length, so nothing special
+        // is needed.
+        self.write(s.as_bytes())
+    }
+
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.c_finish()
+    }
+}
+
 // Nothing special, digits of pi.
 const SEED1: u64 = 0x243f6a8885a308d3;
 const SEED2: u64 = 0x13198a2e03707344;
 const PREVENT_TRIVIAL_ZERO_COLLAPSE: u64 = 0xa4093822299f31d0;
 
 #[inline]
-fn multiply_mix(x: u64, y: u64) -> u64 {
+const fn multiply_mix(x: u64, y: u64) -> u64 {
     // The following code path is only fast if 64-bit to 128-bit widening
     // multiplication is supported by the architecture. Most 64-bit
     // architectures except SPARC64 and Wasm64 support it. However, the target
@@ -259,8 +271,9 @@ fn multiply_mix(x: u64, y: u64) -> u64 {
 ///
 /// We don't bother avalanching here as we'll feed this hash into a
 /// multiplication after which we take the high bits, which avalanches for us.
+
 #[inline]
-fn hash_bytes(bytes: &[u8]) -> u64 {
+const fn hash_bytes(bytes: &[u8]) -> u64 {
     let len = bytes.len();
     let mut s0 = SEED1;
     let mut s1 = SEED2;
@@ -268,11 +281,11 @@ fn hash_bytes(bytes: &[u8]) -> u64 {
     if len <= 16 {
         // XOR the input into s0, s1.
         if len >= 8 {
-            s0 ^= u64::from_le_bytes(bytes[0..8].try_into().unwrap());
-            s1 ^= u64::from_le_bytes(bytes[len - 8..].try_into().unwrap());
+            s0 ^= u64::from_le_bytes(bytes[0..8].try_into().ok().unwrap());
+            s1 ^= u64::from_le_bytes(bytes[len - 8..].try_into().ok().unwrap());
         } else if len >= 4 {
-            s0 ^= u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as u64;
-            s1 ^= u32::from_le_bytes(bytes[len - 4..].try_into().unwrap()) as u64;
+            s0 ^= u32::from_le_bytes(bytes[0..4].try_into().ok().unwrap()) as u64;
+            s1 ^= u32::from_le_bytes(bytes[len - 4..].try_into().ok().unwrap()) as u64;
         } else if len > 0 {
             let lo = bytes[0];
             let mid = bytes[len / 2];
@@ -284,8 +297,8 @@ fn hash_bytes(bytes: &[u8]) -> u64 {
         // Handle bulk (can partially overlap with suffix).
         let mut bulk = &bytes[..(len - 1)];
         while let Some((chunk, rest)) = bulk.split_first_chunk::<16>() {
-            let x = u64::from_le_bytes((&chunk[..8]).try_into().unwrap());
-            let y = u64::from_le_bytes((&chunk[8..]).try_into().unwrap());
+            let x = u64::from_le_bytes((&chunk[..8]).try_into().ok().unwrap());
+            let y = u64::from_le_bytes((&chunk[8..]).try_into().ok().unwrap());
 
             // Replace s1 with a mix of s0, x, and y, and s0 with s1.
             // This ensures the compiler can unroll this loop into two
@@ -300,8 +313,8 @@ fn hash_bytes(bytes: &[u8]) -> u64 {
         }
 
         let suffix = &bytes[len - 16..];
-        s0 ^= u64::from_le_bytes(suffix[0..8].try_into().unwrap());
-        s1 ^= u64::from_le_bytes(suffix[8..16].try_into().unwrap());
+        s0 ^= u64::from_le_bytes(suffix[0..8].try_into().ok().unwrap());
+        s1 ^= u64::from_le_bytes(suffix[8..16].try_into().ok().unwrap());
     }
 
     multiply_mix(s0, s1) ^ (len as u64)
@@ -315,8 +328,7 @@ fn hash_bytes(bytes: &[u8]) -> u64 {
 /// assert_ne!(FxBuildHasher.hash_one(1), FxBuildHasher.hash_one(2));
 /// ```
 #[derive(Copy, Clone)]
-#[cfg_attr(not(feature = "nightly"), derive(Default))]
-#[cfg_attr(feature = "nightly", derive_const(Default))]
+#[derive_const(Default)]
 pub struct FxBuildHasher;
 
 impl BuildHasher for FxBuildHasher {
